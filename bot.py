@@ -1,5 +1,5 @@
 import telebot
-import mysql.connector
+import psycopg2
 from datetime import datetime
 from dotenv import load_dotenv
 import os
@@ -9,14 +9,14 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# DB connection
+# PostgreSQL connection for patient data
 def get_db_connection():
-    return mysql.connector.connect(
-        host=os.getenv("DB_HOST"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        database=os.getenv("DB_NAME"),
-        port=3306
+    return psycopg2.connect(
+        host=os.getenv("PG_HOST"),
+        user=os.getenv("PG_USER"),
+        password=os.getenv("PG_PASSWORD"),
+        dbname=os.getenv("PG_DB"),
+        port=5432
     )
 
 user_data = {}
@@ -75,9 +75,9 @@ def save_patient_id(message):
             INSERT INTO patient_bot_links (
                 patient_id, telegram_user_id, telegram_username, language
             ) VALUES (%s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                patient_id = VALUES(patient_id),
-                language = VALUES(language)
+            ON CONFLICT (telegram_user_id) DO UPDATE SET
+                patient_id = EXCLUDED.patient_id,
+                language = EXCLUDED.language
         """, (
             patient_id,
             chat_id,
