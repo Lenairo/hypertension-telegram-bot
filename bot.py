@@ -4,17 +4,15 @@ from datetime import datetime
 from dotenv import load_dotenv
 import os
 import time
-import threading
 
 load_dotenv()
 
 # Constants
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SESSION_TIMEOUT = 1800  # 30 minutes in seconds
-CLEANUP_INTERVAL = 300  # 5 minutes in seconds
 
 bot = telebot.TeleBot(BOT_TOKEN)
-user_data = {}  # Format: {chat_id: {..., "last_activity": timestamp, "state": "awaiting_systolic"}}
+user_data = {}  # Format: {chat_id: {..., "last_activity": timestamp}}
 
 # Database connection
 def get_db_connection():
@@ -56,8 +54,8 @@ translations = {
     }
 }
 
-# Session management
 def clean_expired_sessions():
+    """Remove sessions that have been inactive for longer than SESSION_TIMEOUT"""
     current_time = datetime.now().timestamp()
     expired_chats = [
         chat_id for chat_id, data in user_data.items()
@@ -68,30 +66,19 @@ def clean_expired_sessions():
         del user_data[chat_id]
     
     if expired_chats:
-        print(f"Cleaned up {len(expired_chats)} expired sessions")
+        print(f"♻️ Cleaned up {len(expired_chats)} expired sessions")
 
 def update_user_activity(chat_id):
+    """Update the last activity timestamp for a user"""
     if chat_id in user_data:
         user_data[chat_id]["last_activity"] = datetime.now().timestamp()
 
 def activity_wrapper(handler):
+    """Decorator to update user activity before handling a message"""
     def wrapped(message):
         update_user_activity(message.chat.id)
         return handler(message)
     return wrapped
-
-def polling_with_cleanup():
-    polling_thread = threading.Thread(target=bot.polling, kwargs={'none_stop': True})
-    polling_thread.start()
-    
-    print("🤖 Bot is now polling. Waiting for messages...")
-    
-    while True:
-        try:
-            clean_expired_sessions()
-            time.sleep(CLEANUP_INTERVAL)
-        except Exception as e:
-            print(f"Error in cleanup loop: {e}")
 
 # Database functions
 def is_onboarded(chat_id):
@@ -300,12 +287,31 @@ def fallback(message):
         lang = get_user_language(chat_id)
         send_main_menu(chat_id, lang)
 
-# Helper functions
 def send_main_menu(chat_id, lang):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(translations[lang]["enter_bp_button"])
     bot.send_message(chat_id, translations[lang]["main_menu"], reply_markup=markup)
 
-# Start the bot
 if __name__ == "__main__":
-    polling_with_cleanup()
+    print("🤖 Bot starting (simplified polling mode)...")
+    clean_expired_sessions()  # Initial cleanup
+    
+    # Simplified polling with error recovery
+    while True:
+        try:
+            bot.polling(
+                none_stop=True,
+                interval=2,
+                timeout=20
+            )
+        except telebot.apihelper.ApiTelegramException as api_error:
+            if api_error.error_code == 409:
+                print("⚠️ Conflict detected. Ensure only one bot instance is running.")
+                print("Waiting 5 seconds before restarting...")
+                time.sleep(5)
+            else:
+                print(f"⚠️ API Error: {api_error}. Retrying in 5s...")
+                time.sleep(5)
+        except Exception as e:
+            print(f"⚠️ Unexpected error: {e}. Restarting in 10s...")
+            time.sleep(10)
