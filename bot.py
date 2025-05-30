@@ -3,13 +3,20 @@ import psycopg2
 from datetime import datetime
 from dotenv import load_dotenv
 import os
+import time
+import threading
 
 load_dotenv()
 
+# Constants
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-bot = telebot.TeleBot(BOT_TOKEN)
+SESSION_TIMEOUT = 1800  # 30 minutes in seconds
+CLEANUP_INTERVAL = 300  # 5 minutes in seconds
 
-# PostgreSQL connection for patient data
+bot = telebot.TeleBot(BOT_TOKEN)
+user_data = {}  # Format: {chat_id: {..., "last_activity": timestamp}}
+
+# Database connection
 def get_db_connection():
     return psycopg2.connect(
         host=os.getenv("PG_HOST"),
@@ -19,8 +26,7 @@ def get_db_connection():
         port=5432
     )
 
-user_data = {}
-
+# Translation dictionary
 translations = {
     "English": {
         "welcome": "👋 Welcome! Please choose your *preferred language*:",
@@ -32,6 +38,8 @@ translations = {
         "summary": "🩺 Here are your readings:\nSystolic: {sys} mmHg\nDiastolic: {dia} mmHg\nPulse: {pulse} bpm\nMAP: {map} mmHg",
         "thanks": "✅ Thank you! Your data is saved.",
         "db_error": "❌ Error saving your data. Please try again later.",
+        "main_menu": "Please choose:",
+        "enter_bp_button": "📤 Enter BP"
     },
     "Ukrainian": {
         "welcome": "👋 Ласкаво просимо! Будь ласка, оберіть *бажану мову*:",
@@ -43,47 +51,120 @@ translations = {
         "summary": "🩺 Ваші показники:\nСистолічний: {sys} мм рт. ст.\nДіастолічний: {dia} мм рт. ст.\nПульс: {pulse} уд/хв\nMAP: {map} мм рт. ст.",
         "thanks": "✅ Дякуємо! Ваші дані збережено.",
         "db_error": "❌ Помилка збереження даних. Спробуйте ще раз пізніше.",
+        "main_menu": "Будь ласка, оберіть:",
+        "enter_bp_button": "📤 Ввести тиск"
     }
 }
 
+# Session management functions
+def clean_expired_sessions():
+    """Remove sessions that have been inactive for longer than SESSION_TIMEOUT"""
+    current_time = datetime.now().timestamp()
+    expired_chats = [
+        chat_id for chat_id, data in user_data.items()
+        if current_time - data.get("last_activity", 0) > SESSION_TIMEOUT
+    ]
+    
+    for chat_id in expired_chats:
+        del user_data[chat_id]  # Silent cleanup
+    
+    if expired_chats:
+        print(f"Cleaned up {len(expired_chats)} expired sessions")
+
+def update_user_activity(chat_id):
+    """Update the last activity timestamp for a user"""
+    if chat_id in user_data:
+        user_data[chat_id]["last_activity"] = datetime.now().timestamp()
+
+def activity_wrapper(handler):
+    """Decorator to update user activity before handling a message"""
+    def wrapped(message):
+        update_user_activity(message.chat.id)
+        return handler(message)
+    return wrapped
+
+def polling_with_cleanup():
+    """Start bot polling with periodic session cleanup"""
+    polling_thread = threading.Thread(target=bot.polling, kwargs={'none_stop': True})
+    polling_thread.start()
+    
+    print("🤖 Bot is now polling. Waiting for messages...")
+    
+    while True:
+        try:
+            clean_expired_sessions()
+            time.sleep(CLEANUP_INTERVAL)
+        except Exception as e:
+            print(f"Error in cleanup loop: {e}")
+
+# Database functions
+def is_onboarded(chat_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM patient_bot_links WHERE telegram_user_id = %s", (chat_id,))
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return result is not None
+    except:
+        return False
+
+def get_user_language(chat_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT language FROM patient_bot_links WHERE telegram_user_id = %s", (chat_id,))
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return result[0] if result else "English"
+    except:
+        return "English"
+
+# Bot handlers
 @bot.message_handler(commands=['start'])
+@activity_wrapper
 def welcome(message):
     chat_id = message.chat.id
-    user_data[chat_id] = {}
+    if is_onboarded(chat_id):
+        lang = get_user_language(chat_id)
+        greeting = "👋 Welcome back!" if lang == "English" else "👋 Ласкаво просимо знову!"
+        bot.send_message(chat_id, greeting, reply_markup=telebot.types.ReplyKeyboardRemove())
+        send_main_menu(chat_id, lang)
+        return
+
+    user_data[chat_id] = {"last_activity": datetime.now().timestamp()}
     markup = telebot.types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
     markup.add("English", "Ukrainian")
-    bot.send_message(chat_id, "👋 Welcome! Please choose your *preferred language*:", parse_mode="Markdown", reply_markup=markup)
+    bot.send_message(chat_id, translations["English"]["welcome"], parse_mode="Markdown", reply_markup=markup)
 
 @bot.message_handler(func=lambda msg: msg.chat.id in user_data and "language" not in user_data[msg.chat.id])
+@activity_wrapper
 def get_language(message):
     chat_id = message.chat.id
     language = message.text.strip()
     user_data[chat_id]["language"] = language
+    user_data[chat_id]["last_activity"] = datetime.now().timestamp()
     bot.send_message(chat_id, translations[language]["ask_patient_id"], parse_mode="Markdown")
 
 @bot.message_handler(func=lambda msg: msg.chat.id in user_data and "patient_id" not in user_data[msg.chat.id])
+@activity_wrapper
 def save_patient_id(message):
     chat_id = message.chat.id
     patient_id = message.text.strip()
-    user_data[chat_id]["patient_id"] = patient_id
     language = user_data[chat_id]["language"]
 
+    user_data[chat_id]["patient_id"] = patient_id
+    user_data[chat_id]["last_activity"] = datetime.now().timestamp()
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO patient_bot_links (
-                patient_id, telegram_user_id, telegram_username, language
-            ) VALUES (%s, %s, %s, %s)
-            ON CONFLICT (telegram_user_id) DO UPDATE SET
-                patient_id = EXCLUDED.patient_id,
-                language = EXCLUDED.language
-        """, (
-            patient_id,
-            chat_id,
-            message.from_user.username or "",
-            language
-        ))
+            INSERT INTO patient_bot_links (patient_id, telegram_user_id, telegram_username, language)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (telegram_user_id) DO UPDATE SET patient_id = EXCLUDED.patient_id, language = EXCLUDED.language
+        """, (patient_id, chat_id, message.from_user.username or "", language))
         conn.commit()
         cursor.close()
         conn.close()
@@ -95,23 +176,29 @@ def save_patient_id(message):
         bot.send_message(chat_id, translations[language]["db_error"])
 
 @bot.message_handler(func=lambda msg: msg.chat.id in user_data and "systolic" not in user_data[msg.chat.id])
+@activity_wrapper
 def get_systolic(message):
     chat_id = message.chat.id
     user_data[chat_id]["systolic"] = message.text.strip()
+    user_data[chat_id]["last_activity"] = datetime.now().timestamp()
     lang = user_data[chat_id]["language"]
     bot.send_message(chat_id, translations[lang]["diastolic"], parse_mode="Markdown")
 
 @bot.message_handler(func=lambda msg: msg.chat.id in user_data and "diastolic" not in user_data[msg.chat.id])
+@activity_wrapper
 def get_diastolic(message):
     chat_id = message.chat.id
     user_data[chat_id]["diastolic"] = message.text.strip()
+    user_data[chat_id]["last_activity"] = datetime.now().timestamp()
     lang = user_data[chat_id]["language"]
     bot.send_message(chat_id, translations[lang]["pulse"], parse_mode="Markdown")
 
 @bot.message_handler(func=lambda msg: msg.chat.id in user_data and "pulse" not in user_data[msg.chat.id])
+@activity_wrapper
 def save_bp_readings(message):
     chat_id = message.chat.id
     user_data[chat_id]["pulse"] = message.text.strip()
+    user_data[chat_id]["last_activity"] = datetime.now().timestamp()
     lang = user_data[chat_id]["language"]
 
     try:
@@ -126,9 +213,8 @@ def save_bp_readings(message):
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO patient_bp_readings (
-                patient_id, systolic_bp, diastolic_bp, pulse
-            ) VALUES (%s, %s, %s, %s)
+            INSERT INTO patient_bp_readings (patient_id, systolic_bp, diastolic_bp, pulse)
+            VALUES (%s, %s, %s, %s)
         """, (
             user_data[chat_id]["patient_id"],
             sys,
@@ -140,11 +226,54 @@ def save_bp_readings(message):
         conn.close()
 
         bot.send_message(chat_id, translations[lang]["thanks"])
-        del user_data[chat_id]  # reset conversation
+        send_main_menu(chat_id, lang)
+        del user_data[chat_id]
     except Exception as e:
         print(f"DB Error on BP insert: {e}")
         bot.send_message(chat_id, translations[lang]["db_error"])
 
-# Start bot
-print("🤖 Bot is now polling. Waiting for messages...")
-bot.polling()
+@bot.message_handler(func=lambda msg: msg.chat.id not in user_data and is_onboarded(msg.chat.id))
+@activity_wrapper
+def resume_session(message):
+    chat_id = message.chat.id
+    lang = get_user_language(chat_id)
+    if message.text == translations[lang]["enter_bp_button"]:
+        user_data[chat_id] = {
+            "language": lang,
+            "last_activity": datetime.now().timestamp()
+        }
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT patient_id FROM patient_bot_links WHERE telegram_user_id = %s", (chat_id,))
+            patient = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            if patient:
+                user_data[chat_id]["patient_id"] = patient[0]
+            bot.send_message(chat_id, translations[lang]["systolic"], parse_mode="Markdown")
+        except Exception as e:
+            print(f"DB Error fetching patient_id: {e}")
+            bot.send_message(chat_id, translations[lang]["db_error"])
+    else:
+        send_main_menu(chat_id, lang)
+
+@bot.message_handler(func=lambda msg: True)
+@activity_wrapper
+def fallback(message):
+    chat_id = message.chat.id
+    if not is_onboarded(chat_id):
+        bot.send_message(chat_id, "Please type /start to begin.")
+    else:
+        lang = get_user_language(chat_id)
+        send_main_menu(chat_id, lang)
+
+# Helper functions
+def send_main_menu(chat_id, lang):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(translations[lang]["enter_bp_button"])
+    bot.send_message(chat_id, translations[lang]["main_menu"], reply_markup=markup)
+
+# Start the bot
+if __name__ == "__main__":
+    polling_with_cleanup()
