@@ -297,21 +297,22 @@ if __name__ == "__main__":
     clean_expired_sessions()  # Initial cleanup
     
     # Simplified polling with error recovery
+
     while True:
         try:
-            bot.polling(
-                none_stop=True,
-                interval=2,
-                timeout=20
-            )
+            bot.polling(none_stop=True, interval=2, timeout=20)
         except telebot.apihelper.ApiTelegramException as api_error:
             if api_error.error_code == 409:
-                print("⚠️ Conflict detected. Ensure only one bot instance is running.")
-                print("Waiting 5 seconds before restarting...")
-                time.sleep(5)
+                print("⚠️ Conflict detected (409). Exiting to avoid duplicate bot instances.")
+                # Let process manager restart this bot cleanly
+                time.sleep(10)  # Optional: delay to let Telegram release previous session
+                sys.exit(1)  # Exit immediately to prevent retry loop
             else:
                 print(f"⚠️ API Error: {api_error}. Retrying in 5s...")
                 time.sleep(5)
         except Exception as e:
             print(f"⚠️ Unexpected error: {e}. Restarting in 10s...")
             time.sleep(10)
+
+
+    
