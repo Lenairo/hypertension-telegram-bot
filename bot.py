@@ -1,20 +1,22 @@
+
 import telebot
 import psycopg2
 from datetime import datetime
 from dotenv import load_dotenv
 import os
 import time
+import sys
 
 load_dotenv()
 
 # Constants
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-SESSION_TIMEOUT = 1800  # 30 minutes in seconds
+SESSION_TIMEOUT = 1800  # 30 minutes
 
 bot = telebot.TeleBot(BOT_TOKEN)
 user_data = {}
 
-# Database connection
+# --- Database ---
 def get_db_connection():
     return psycopg2.connect(
         host=os.getenv("PG_HOST"),
@@ -24,7 +26,7 @@ def get_db_connection():
         port=5432
     )
 
-# Translation dictionary
+# --- Translations ---
 translations = {
     "English": {
         "welcome": "👋 Welcome! Please choose your *preferred language*:",
@@ -54,6 +56,7 @@ translations = {
     }
 }
 
+# --- Helpers ---
 def is_onboarded(chat_id):
     try:
         conn = get_db_connection()
@@ -83,6 +86,7 @@ def send_main_menu(chat_id, lang):
     markup.add(translations[lang]["enter_bp_button"])
     bot.send_message(chat_id, translations[lang]["main_menu"], reply_markup=markup)
 
+# --- Handlers ---
 @bot.message_handler(commands=['start'])
 def welcome(message):
     chat_id = message.chat.id
@@ -110,7 +114,6 @@ def save_patient_id(message):
     chat_id = message.chat.id
     patient_id = message.text.strip()
     language = user_data[chat_id]["language"]
-
     user_data[chat_id]["patient_id"] = patient_id
     try:
         conn = get_db_connection()
@@ -123,7 +126,6 @@ def save_patient_id(message):
         conn.commit()
         cursor.close()
         conn.close()
-
         bot.send_message(chat_id, translations[language]["linked"])
         bot.send_message(chat_id, translations[language]["systolic"], parse_mode="Markdown")
         user_data[chat_id]["state"] = "awaiting_systolic"
@@ -131,55 +133,40 @@ def save_patient_id(message):
         print(f"DB Error: {e}")
         bot.send_message(chat_id, translations[language]["db_error"])
 
-@bot.message_handler(func=lambda msg: 
-    msg.chat.id in user_data and 
-    user_data[msg.chat.id].get("state") == "awaiting_systolic"
-)
+@bot.message_handler(func=lambda msg: msg.chat.id in user_data and user_data[msg.chat.id].get("state") == "awaiting_systolic")
 def get_systolic(message):
     chat_id = message.chat.id
     try:
         systolic = float(message.text.strip())
         user_data[chat_id]["systolic"] = systolic
         user_data[chat_id]["state"] = "awaiting_diastolic"
-        lang = user_data[chat_id]["language"]
-        bot.send_message(chat_id, translations[lang]["diastolic"], parse_mode="Markdown")
+        bot.send_message(chat_id, translations[user_data[chat_id]["language"]]["diastolic"], parse_mode="Markdown")
     except ValueError:
         bot.send_message(chat_id, "⚠️ Please enter a valid number")
 
-@bot.message_handler(func=lambda msg: 
-    msg.chat.id in user_data and 
-    user_data[msg.chat.id].get("state") == "awaiting_diastolic"
-)
+@bot.message_handler(func=lambda msg: msg.chat.id in user_data and user_data[msg.chat.id].get("state") == "awaiting_diastolic")
 def get_diastolic(message):
     chat_id = message.chat.id
     try:
         diastolic = float(message.text.strip())
         user_data[chat_id]["diastolic"] = diastolic
         user_data[chat_id]["state"] = "awaiting_pulse"
-        lang = user_data[chat_id]["language"]
-        bot.send_message(chat_id, translations[lang]["pulse"], parse_mode="Markdown")
+        bot.send_message(chat_id, translations[user_data[chat_id]["language"]]["pulse"], parse_mode="Markdown")
     except ValueError:
         bot.send_message(chat_id, "⚠️ Please enter a valid number")
 
-@bot.message_handler(func=lambda msg: 
-    msg.chat.id in user_data and 
-    user_data[msg.chat.id].get("state") == "awaiting_pulse"
-)
+@bot.message_handler(func=lambda msg: msg.chat.id in user_data and user_data[msg.chat.id].get("state") == "awaiting_pulse")
 def get_pulse(message):
     chat_id = message.chat.id
     try:
         pulse = float(message.text.strip())
         user_data[chat_id]["pulse"] = pulse
-        
-        # Save and show summary
         lang = user_data[chat_id]["language"]
         sys = user_data[chat_id]["systolic"]
         dia = user_data[chat_id]["diastolic"]
         map_val = round(dia + (sys - dia) / 3)
-
         summary = translations[lang]["summary"].format(sys=sys, dia=dia, pulse=pulse, map=map_val)
         bot.send_message(chat_id, summary)
-
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
@@ -190,7 +177,6 @@ def get_pulse(message):
             conn.commit()
             cursor.close()
             conn.close()
-
             bot.send_message(chat_id, translations[lang]["thanks"])
             send_main_menu(chat_id, lang)
             del user_data[chat_id]
@@ -200,23 +186,13 @@ def get_pulse(message):
     except ValueError:
         bot.send_message(chat_id, "⚠️ Please enter a valid number")
 
-@bot.message_handler(func=lambda msg: 
-    msg.chat.id not in user_data and 
-    is_onboarded(msg.chat.id) and
-    msg.text in [
-        translations[get_user_language(msg.chat.id)]["enter_bp_button"],
-        "/enter"
-    ]
-)
+@bot.message_handler(func=lambda msg: msg.chat.id not in user_data and is_onboarded(msg.chat.id) and msg.text in [
+    translations[get_user_language(msg.chat.id)]["enter_bp_button"], "/enter"
+])
 def handle_enter_bp(message):
     chat_id = message.chat.id
     lang = get_user_language(chat_id)
-    
-    user_data[chat_id] = {
-        "language": lang,
-        "state": "awaiting_systolic"
-    }
-    
+    user_data[chat_id] = {"language": lang, "state": "awaiting_systolic"}
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -224,7 +200,6 @@ def handle_enter_bp(message):
         patient = cursor.fetchone()
         cursor.close()
         conn.close()
-        
         if patient:
             user_data[chat_id]["patient_id"] = patient[0]
             bot.send_message(chat_id, translations[lang]["systolic"], parse_mode="Markdown")
@@ -236,9 +211,7 @@ def handle_enter_bp(message):
 
 @bot.message_handler(func=lambda msg: msg.chat.id not in user_data and is_onboarded(msg.chat.id))
 def resume_session(message):
-    chat_id = message.chat.id
-    lang = get_user_language(chat_id)
-    send_main_menu(chat_id, lang)
+    send_main_menu(message.chat.id, get_user_language(message.chat.id))
 
 @bot.message_handler(func=lambda msg: True)
 def fallback(message):
@@ -246,31 +219,24 @@ def fallback(message):
     if not is_onboarded(chat_id):
         bot.send_message(chat_id, "Please type /start to begin.")
     else:
-        lang = get_user_language(chat_id)
-        send_main_menu(chat_id, lang)
+        send_main_menu(chat_id, get_user_language(chat_id))
 
-if __name__ == "__main__":
-    print("🤖 Bot starting (stable version)...")
+# --- Polling Entry ---
+def remove_webhook_and_poll():
     try:
-        bot.polling(
-            none_stop=True,
-            interval=2,
-            timeout=20
-        )
+        bot.remove_webhook()
+        print("✅ Webhook removed. Starting polling...")
+        bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=60)
     except telebot.apihelper.ApiTelegramException as api_error:
         if api_error.error_code == 409:
-            print("""
-            🔴 CONFLICT DETECTED!
-            Solution:
-            1. Stop all running instances:
-               pkill -f 'python.*your_bot_file.py'
-            2. Start fresh:
-               python3 your_bot_file.py
-            """)
+            print("🔴 Conflict (409) error: another instance is running. Restart after stopping all others.")
         else:
-            print(f"API Error: {api_error}")
+            print(f"API error: {api_error}")
     except Exception as e:
         print(f"Unexpected error: {e}")
 
+if __name__ == "__main__":
+    print("🤖 Bot is starting...")
+    remove_webhook_and_poll()
 
     
