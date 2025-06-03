@@ -1,14 +1,13 @@
 from flask import Flask, request
 import os
 from dotenv import load_dotenv
+from telebot import types
+from bot import bot # ✅ Import the already-configured bot with handlers
 
 load_dotenv()
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. https://your-domain.com
 PORT = int(os.getenv("PORT", 5000))
-
-# Import bot instance and handlers from bot.py
-from bot import bot
 
 app = Flask(__name__)
 
@@ -16,7 +15,7 @@ app = Flask(__name__)
 def webhook():
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
-        update = bot.types.Update.de_json(json_string)  # Use bot.types to access telebot.types
+        update = types.Update.de_json(json_string)  # ✅ Use types.Update
         bot.process_new_updates([update])
         return "OK", 200
     else:
