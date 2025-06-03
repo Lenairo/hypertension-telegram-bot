@@ -1,22 +1,19 @@
-
 import telebot
+from flask import Flask, request
 import psycopg2
-from datetime import datetime
 from dotenv import load_dotenv
 import os
-import time
-import sys
 
 load_dotenv()
 
-# Constants
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-SESSION_TIMEOUT = 1800  # 30 minutes
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. https://your-service.onrender.com/webhook
 
 bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(__name__)
 user_data = {}
 
-# --- Database ---
+# --- Database connection ---
 def get_db_connection():
     return psycopg2.connect(
         host=os.getenv("PG_HOST"),
@@ -221,22 +218,23 @@ def fallback(message):
     else:
         send_main_menu(chat_id, get_user_language(chat_id))
 
-# --- Polling Entry ---
-def remove_webhook_and_poll():
-    try:
-        bot.remove_webhook()
-        print("✅ Webhook removed. Starting polling...")
-        bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=60)
-    except telebot.apihelper.ApiTelegramException as api_error:
-        if api_error.error_code == 409:
-            print("🔴 Conflict (409) error: another instance is running. Restart after stopping all others.")
-        else:
-            print(f"API error: {api_error}")
-    except Exception as e:
-        print(f"Unexpected error: {e}")
+# --- Webhook endpoint ---
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return "OK", 200
+    return "Unsupported Media Type", 415
+
+@app.route("/", methods=["GET"])
+def index():
+    return "Bot is running.", 200
 
 if __name__ == "__main__":
-    print("🤖 Bot is starting...")
-    remove_webhook_and_poll()
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL)
+    print("✅ Webhook set. Starting Flask server...")
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
 
-    
