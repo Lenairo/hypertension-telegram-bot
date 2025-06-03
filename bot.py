@@ -234,7 +234,7 @@ def index():
 
 if __name__ == "__main__":
     bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
+    bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
     print("✅ Webhook set. Starting Flask server...")
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
 
