@@ -60,7 +60,8 @@ def is_onboarded(chat_id):
         cursor.close()
         conn.close()
         return result is not None
-    except:
+    except Exception as e:
+        print(f"DB Error (is_onboarded): {e}")
         return False
 
 def get_user_language(chat_id):
@@ -72,7 +73,8 @@ def get_user_language(chat_id):
         cursor.close()
         conn.close()
         return result[0] if result else "English"
-    except:
+    except Exception as e:
+        print(f"DB Error (get_user_language): {e}")
         return "English"
 
 def send_main_menu(chat_id, lang):
@@ -100,6 +102,9 @@ def welcome(message):
 def get_language(message):
     chat_id = message.chat.id
     language = message.text.strip()
+    if language not in translations:
+        bot.send_message(chat_id, "⚠️ Please select a valid language option.")
+        return
     user_data[chat_id]["language"] = language
     bot.send_message(chat_id, translations[language]["ask_patient_id"], parse_mode="Markdown")
 
@@ -124,7 +129,7 @@ def save_patient_id(message):
         bot.send_message(chat_id, translations[language]["systolic"], parse_mode="Markdown")
         user_data[chat_id]["state"] = "awaiting_systolic"
     except Exception as e:
-        print(f"DB Error: {e}")
+        print(f"DB Error (save_patient_id): {e}")
         bot.send_message(chat_id, translations[language]["db_error"])
 
 @bot.message_handler(func=lambda msg: msg.chat.id in user_data and user_data[msg.chat.id].get("state") == "awaiting_systolic")
@@ -175,7 +180,7 @@ def get_pulse(message):
             send_main_menu(chat_id, lang)
             del user_data[chat_id]
         except Exception as e:
-            print(f"DB Error: {e}")
+            print(f"DB Error (get_pulse save): {e}")
             bot.send_message(chat_id, translations[lang]["db_error"])
     except ValueError:
         bot.send_message(chat_id, "⚠️ Please enter a valid number")
@@ -200,7 +205,7 @@ def handle_enter_bp(message):
         else:
             bot.send_message(chat_id, translations[lang]["db_error"])
     except Exception as e:
-        print(f"DB Error: {e}")
+        print(f"DB Error (handle_enter_bp): {e}")
         bot.send_message(chat_id, translations[lang]["db_error"])
 
 @bot.message_handler(func=lambda msg: msg.chat.id not in user_data and is_onboarded(msg.chat.id))
@@ -214,4 +219,3 @@ def fallback(message):
         bot.send_message(chat_id, "Please type /start to begin.")
     else:
         send_main_menu(chat_id, get_user_language(chat_id))
-        
