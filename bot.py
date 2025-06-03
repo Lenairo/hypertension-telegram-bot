@@ -1,5 +1,4 @@
 import telebot
-from flask import Flask, request
 import psycopg2
 from dotenv import load_dotenv
 import os
@@ -7,10 +6,8 @@ import os
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. https://your-service.onrender.com/webhook
 
 bot = telebot.TeleBot(BOT_TOKEN)
-app = Flask(__name__)
 user_data = {}
 
 # --- Database connection ---
@@ -217,23 +214,7 @@ def fallback(message):
         bot.send_message(chat_id, "Please type /start to begin.")
     else:
         send_main_menu(chat_id, get_user_language(chat_id))
-
-# --- Webhook endpoint ---
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return "OK", 200
-    return "Unsupported Media Type", 415
-
-@app.route("/", methods=["GET"])
-def index():
-    return "Bot is running.", 200
-
-if __name__ == "__main__":
-    bot.remove_webhook()
-    bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
-    print("✅ Webhook set. Bot ready.")
+    if __name__ == "__main__":
+        print("🚀 Bot is polling...")
+        bot.infinity_polling()
     
