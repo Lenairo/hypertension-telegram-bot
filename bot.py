@@ -214,8 +214,4 @@ def fallback(message):
         bot.send_message(chat_id, "Please type /start to begin.")
     else:
         send_main_menu(chat_id, get_user_language(chat_id))
-
-if __name__ == "__main__":
-    print("🚀 Bot is polling...")
-    bot.infinity_polling()
-   
+        
